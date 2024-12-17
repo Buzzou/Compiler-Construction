@@ -1,157 +1,273 @@
-//
-// Created by 李若昊 on 11/14/20.
-//
+#include <iostream>
+#include <fstream>
+#include <vector>
+#include <string>
+#include <cctype>
+#include <queue>
+#include "Lexer.h"
 
-#include<iostream>
-#include<cstdio>
-#include<cstring>
-#include<string>
 using namespace std;
 
+// // Token 结构
+// struct Token
+// {
+//     string type; // Token 类型（如 Keyword, Identifier, Number 等）
+//     string value; // Token 的具体值
+//     int line; // 行号
+//     int column; // 列号
+// };
 
-// 返回值类别：-3为整数以0开头了，-2为打开文件出错，-1为词语错误
-// 1为保留字，2为一般标识符，3为无符号整数，4为单目符，5为双目符,6为注释
+// 全局变量
+vector<Token> tokens; // 存储合法词法单元
+queue<Token> tokenQueue; // 存储词法单元
+vector<string> errors; // 存储错误信息
 
-extern int TESTscan()
+// 保留字和符号表
+const vector<string> keywords = {"if", "else", "for", "while", "int", "write", "read"};
+const vector<char> singleSymbols = {'(', ')', ';', '{', '}', '+', '-', '*', '/', '=', '<', '>'};
+const vector<string> doubleSymbols = {">=", "<=", "!=", "=="};
+
+// 添加错误信息
+void addError(const string& errorMsg, int line, int column)
 {
-    string keyword[7]={"if","else","for","while","int","write","read"};
-    char singleword[50]={'(',')',';','{','}','+','-','*'};  //没有'/','<','>','='
-    char doubleword[10]= {'>','<','!','='}; //双目符的首字符
+    errors.push_back("Line " + to_string(line) + ", Column " + to_string(column) + ": " + errorMsg);
+}
 
-    FILE *file_pointer;
+// 判断是否为保留字
+bool isKeyword(const string& word)
+{
+    return find(keywords.begin(), keywords.end(), word) != keywords.end();
+}
 
-    string token=""; //识别出的单词
-    //-----------------------------------------------------传入文件-----------------------------------------------------//
-    if(!(file_pointer=fopen("/Users/ruohaoli/CLionProjects/Compiler Construction/Untitled.txt","r")))
+// 处理标识符或保留字
+void handleIdentifier(ifstream& file, char& buffer, int& line, int& column)
+{
+    string token = "";
+    do
     {
-        cout<<"打开文件出错"<<endl;
-        return -2;
+        token += buffer;
+        buffer = file.get();
+        column++;
     }
-    //---------------------------------------------------读取一个字符---------------------------------------------------//
-    char buffer;    //每次读入的单字符
-    S1: buffer=getc(file_pointer);
-    //-----------------------------------------------对每一个字符分情况判断-----------------------------------------------//
-    while(buffer!=EOF)  //读到的不是文件尾
+    while (isalnum(buffer));
+
+    // 判断是保留字还是一般标识符
+    if (isKeyword(token))
     {
-        //--------------------------------------------------吃掉空格等--------------------------------------------------//
-        while(buffer==' '||buffer=='\n'||buffer=='\t')
-            buffer=getc(file_pointer);  //吃掉，往后读
-        //------------------------------------------初读为字母，只可能是标识符---------------------------------------------//
-        //标识符：字母打头，后接任意字母或数字。
-        if(isalpha(buffer))
+        tokens.push_back({"Keyword", token, line, column - (int) token.size()});
+    }
+    else
+    {
+        tokens.push_back({"Identifier", token, line, column - (int) token.size()});
+    }
+    file.unget(); // 回退一个字符
+    column--;
+}
+
+// 处理无符号整数
+void handleNumber(ifstream& file, char& buffer, int& line, int& column)
+{
+    string token = "";
+    bool leadingZero = false;
+
+    if (buffer == '0') leadingZero = true;
+    do
+    {
+        token += buffer;
+        buffer = file.get();
+        column++;
+
+        if (isalpha(buffer))
         {
-            token+=buffer;  //先预存进token
-            buffer=getc(file_pointer);  //预读一个
-            while(isalnum(buffer))  //如果后接字母或数字则拼在一起
+            // 检测到字母，标识非法标识符
+            token += buffer;
+            buffer = file.get();
+            column++;
+            while (isalnum(buffer))
             {
-                token+=buffer;   //连起来放在token里
-                buffer=getc(file_pointer);   //再读，直到不是字母或数字
+                // 读取完整的非法标识符
+                token += buffer;
+                buffer = file.get();
+                column++;
             }
-            fseek(file_pointer, -1, SEEK_CUR);//指针回退一格,把标识符后一个字符吐出来
-            //---------------------------------------------查保留字---------------------------------------------//
-            //保留字为标识符的子集，包括：if, else, for, while, int, write, read。
-            for(int i=0;i<7;i++)
-            {
-                if(token==keyword[i])
-                {
-                    cout<<"保留字"<<' '<<token<<endl;
-                    token.clear();
-                    goto S1;
-                }
-            }
-            cout<<"一般标识符"<<' '<<token<<endl;
-            token.clear();
-            goto S1;
+            file.unget(); // 回退一个字符
+            column--;
+            addError("Invalid identifier: " + token, line, column - (int) token.size() + 1);
+            return;
         }
-            //----------------------------------------初读为数字，只可能是无符号整数--------------------------------------------//
-            //无符号整数：由数字组成，但最高位不能为 0，允许一位的 0。
-        else if (isdigit(buffer))
+    }
+    while (isdigit(buffer));
+
+    file.unget(); // 回退一个字符
+    column--;
+
+    if (leadingZero && token.size() > 1)
+    {
+        addError("An integer cannot begin with zero: " + token, line, column - (int) token.size() + 1);
+    }
+    else
+    {
+        tokens.push_back({"Number", token, line, column - (int) token.size() + 1});
+    }
+}
+
+// 处理单目符号
+void handleSingleSymbol(char buffer, int line, int column)
+{
+    tokens.push_back({"SingleSymbol", string(1, buffer), line, column});
+}
+
+// 处理注释、除号或双目符号
+void handleCommentOrSymbol(ifstream& file, char& buffer, int& line, int& column)
+{
+    char nextChar = file.get();
+    column++;
+
+    if (buffer == '/' && nextChar == '*')
+    {
+        // 注释开始
+        char prevChar = 0;
+        while (file.get(buffer))
         {
-            token+=buffer;  //先存token
-            buffer=getc(file_pointer);   //预读
-            while(isdigit(buffer))  //只要下一位还是数字
+            column++;
+            if (buffer == '\n')
             {
-                token+=buffer;   //就拼接，拼起来的部分存在token里
-                buffer=getc(file_pointer);   //再读
+                line++;
+                column = 0;
             }
-            fseek(file_pointer, -1, SEEK_CUR);//回退一格
-            if(token.length()>1&&token.at(0)=='0')
+            if (prevChar == '*' && buffer == '/')
             {
-                cout<<"*** An integer cannot begin with zero."<<' '<<"Detected input: "<<token<<" ***"<<endl;
-                token.clear();    //应该要跳过以0开头的这串数字
-                goto S1;
+                break; // 注释结束
             }
-            else
-                cout<<"无符号整数 "<<token<<endl;//输出无符号整数
-            token.clear();
-            goto S1;
+            prevChar = buffer;
         }
-            //--------------------------------------------------单目符识别--------------------------------------------------//
-            /* 分界符：(、)、;、{、}
-            *  运算符：+、-、*、/、=、<、>
-            */
-        else if(strchr(singleword,buffer)!=NULL)    //在单目符集合中有
+    }
+    else if (buffer == '!')
+    {
+        // 特殊处理 "!"
+        if (nextChar == '=')
         {
-            token+=buffer;  //存token
-            cout<<"单目符 "<<token<<endl;
-            token.clear();
-            goto S1;
+            tokens.push_back({"DoubleSymbol", "!=", line, column - 1});
         }
-            //--------------------------------------------------双目符识别--------------------------------------------------//
-            //运算符：>=、<=、!=、==、=
-        else if(strchr(doubleword,buffer)!=NULL)
-        {
-            token+=buffer;  //先存token
-            buffer=getc(file_pointer);   //超前搜索以判断是不是双目符
-            //----------------------------------如果下一位是'='则连起来拼接成'?='----------------------------------//
-            if(buffer=='=')
-            {
-                token+=buffer;  //俩连起来
-                cout<<"双目符 "<<token<<endl;
-                token.clear();
-                goto S1;
-            }
-                //-------------------------------------如果下一位不是'='就是单目符-------------------------------------//
-            else
-                fseek(file_pointer, -1, SEEK_CUR);//回退一格
-            cout<<"单目符 "<<token<<endl;
-            token.clear();
-            goto S1;
-        }
-            //-----------------------------------------------------注释----------------------------------------------------//
-        else if(buffer=='/')    //初读为'/'
-        {
-            buffer=getc(file_pointer);   //超前搜索
-            //----------------------------------------下一个字符是*才是注释---------------------------------------//
-            //注释符：/*       */
-            if(buffer=='*') //就是注释！
-            {
-                char after_buffer;
-                after_buffer = getc(file_pointer);    //注释体，比如/*This*/，after_buffer='T'
-                do {
-                    buffer = after_buffer;   //buffer前移从*变成T
-                    after_buffer = getc(file_pointer);    //after_asterisk前移变成h，现在 buffer 和 after_buffer 全部进入注释体
-                }
-                while ((buffer != '*' || after_buffer != '/') && after_buffer != EOF);   //直到读到注释结尾*/或文件尾
-                buffer = getc(file_pointer); //读掉/
-            }
-                //--------------------------------------下一个字符不是*那就是除号--------------------------------------//
-            else
-            {
-                token+='/';
-                cout<<"单目符 "<<token<<endl;
-                token.clear();
-                goto S1;
-            }
-        }
-            //---------------------------------------------------错误处理---------------------------------------------------//
         else
         {
-            token+=buffer;
-            cout<<"*** Detected unrecognized character: "<<token<<" ***"<<endl;
-            token.clear();
-            goto S1;
+            addError("Unrecognized character: !", line, column - 1);
+            file.unget(); // 回退字符
+            column--;
         }
     }
-    fclose(file_pointer);    //关闭输入文件
+    else
+    {
+        string possibleDoubleSymbol = string(1, buffer) + nextChar;
+        if (find(doubleSymbols.begin(), doubleSymbols.end(), possibleDoubleSymbol) != doubleSymbols.end())
+        {
+            tokens.push_back({"DoubleSymbol", possibleDoubleSymbol, line, column - 1});
+        }
+        else
+        {
+            file.unget(); // 回退字符
+            column--;
+            handleSingleSymbol(buffer, line, column);
+        }
+    }
 }
+
+// 词法分析主程序
+void lexicalAnalysis(const string& filePath)
+{
+    ifstream file(filePath);
+    if (!file.is_open())
+    {
+        cerr << "Error: Cannot open file." << endl;
+        return;
+    }
+
+    char buffer;
+    int line = 1, column = 0;
+
+    while (file.get(buffer))
+    {
+        column++;
+
+        if (isspace(buffer))
+        {
+            if (buffer == '\n')
+            {
+                line++;
+                column = 0;
+            }
+            continue;
+        }
+
+        if (isalpha(buffer))
+        {
+            handleIdentifier(file, buffer, line, column);
+        }
+        else if (isdigit(buffer))
+        {
+            handleNumber(file, buffer, line, column);
+        }
+        else if (find(singleSymbols.begin(), singleSymbols.end(), buffer) != singleSymbols.end() || buffer == '/' ||
+            buffer == '!')
+        {
+            handleCommentOrSymbol(file, buffer, line, column);
+        }
+        else
+        {
+            addError("Unrecognized character: " + string(1, buffer), line, column);
+        }
+    }
+
+    file.close();
+
+    // 将 tokens 加入队列
+    for (const auto& token: tokens)
+    {
+        tokenQueue.push(token);
+    }
+    tokenQueue.push({"EOF", "#", -1, -1}); // 添加结束符
+}
+
+// 实现 TESTscan() 函数
+Token TESTscan()
+{
+    if (tokenQueue.empty()) return {"EOF", "#", -1, -1};
+    Token nextToken = tokenQueue.front();
+    tokenQueue.pop();
+    return nextToken;
+}
+
+// 输出结果到文件
+void outputResults(const string& tokenFile, const string& errorFile)
+{
+    ofstream tokenOutput(tokenFile);
+    for (const auto& token: tokens)
+    {
+        tokenOutput << token.type << "\t" << token.value << "\t" << "(Line: " << token.line << ", Column: " << token.
+                column << ")" << endl;
+    }
+    tokenOutput.close();
+
+    ofstream errorOutput(errorFile);
+    for (const auto& error: errors)
+    {
+        errorOutput << error << endl;
+    }
+    errorOutput.close();
+}
+
+// // 主函数
+// int main()
+// {
+//     string inputFilePath = "test_program.txt"; // 输入文件路径
+//     string tokenFilePath = "lex.txt"; // 输出的 Token 文件路径
+//     string errorFilePath = "errors.txt"; // 输出的错误文件路径
+//
+//     lexicalAnalysis(inputFilePath);
+//     outputResults(tokenFilePath, errorFilePath);
+//
+//     cout << "Lexical analysis completed. Check " << tokenFilePath << " and " << errorFilePath << " for details." <<
+//             endl;
+//
+//     return 0;
+// }
